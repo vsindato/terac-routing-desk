@@ -1,0 +1,206 @@
+// Terac Routing Desk schema.
+//
+// Two invariants are enforced by partial unique indexes that Prisma's schema
+// language cannot express. They live in the hand-written migration
+// `prisma/migrations/*_partial_unique_indexes/migration.sql`:
+//   - assignments_one_active_per_task:  at most one offered/accepted assignment per task
+//   - routing_attempts_one_pending_per_task: at most one pending routing attempt per task
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Priority {
+  low
+  normal
+  high
+  urgent
+}
+
+enum TaskStatus {
+  routing
+  offered
+  assigned
+  unmatched
+  needs_attention
+}
+
+enum AttemptStatus {
+  pending
+  matched
+  no_match
+  cancelled
+  superseded
+}
+
+enum EngineScenario {
+  random
+  fast_match
+  slow_match
+  never_returns
+  no_match
+}
+
+enum ContributorBehavior {
+  auto
+  always_accept
+  always_decline
+  fail_before_start
+}
+
+enum AssignmentStatus {
+  offered
+  accepted
+  declined
+  failed
+  revoked
+}
+
+enum AssignmentSource {
+  engine
+  operator
+}
+
+enum EventActor {
+  system
+  engine
+  operator
+  contributor
+}
+
+model Expertise {
+  id           String                 @id
+  label        String
+  contributors ContributorExpertise[]
+  tasks        TaskExpertise[]
+
+  @@map("expertise")
+}
+
+model Contributor {
+  id          String                 @id @default(uuid()) @db.Uuid
+  name        String
+  email       String                 @unique
+  createdAt   DateTime               @default(now()) @map("created_at")
+  expertise   ContributorExpertise[]
+  assignments Assignment[]
+
+  @@map("contributors")
+}
+
+model ContributorExpertise {
+  contributorId String      @map("contributor_id") @db.Uuid
+  expertiseId   String      @map("expertise_id")
+  contributor   Contributor @relation(fields: [contributorId], references: [id], onDelete: Cascade)
+  expertise     Expertise   @relation(fields: [expertiseId], references: [id])
+
+  @@id([contributorId, expertiseId])
+  @@map("contributor_expertise")
+}
+
+model Task {
+  id                  String              @id @default(uuid()) @db.Uuid
+  title               String
+  description         String?
+  priority            Priority            @default(normal)
+  status              TaskStatus
+  contributorBehavior ContributorBehavior @default(auto) @map("contributor_behavior")
+  currentAttemptId    String?             @unique @map("current_attempt_id") @db.Uuid
+  createdAt           DateTime            @default(now()) @map("created_at")
+  updatedAt           DateTime            @updatedAt @map("updated_at")
+
+  currentAttempt RoutingAttempt?  @relation("CurrentAttempt", fields: [currentAttemptId], references: [id])
+  attempts       RoutingAttempt[] @relation("TaskAttempts")
+  expertise      TaskExpertise[]
+  assignments    Assignment[]
+  events         TaskEvent[]
+
+  @@index([status])
+  @@map("tasks")
+}
+
+model TaskExpertise {
+  taskId      String    @map("task_id") @db.Uuid
+  expertiseId String    @map("expertise_id")
+  task        Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  expertise   Expertise @relation(fields: [expertiseId], references: [id])
+
+  @@id([taskId, expertiseId])
+  @@map("task_expertise")
+}
+
+/// One request to the routing engine. Exactly one attempt per task may be
+/// `pending`; an engine response is applied only while its attempt is pending.
+model RoutingAttempt {
+  id                     String         @id @default(uuid()) @db.Uuid
+  taskId                 String         @map("task_id") @db.Uuid
+  status                 AttemptStatus  @default(pending)
+  scenario               EngineScenario @default(random)
+  /// Contributor ids the engine was given, snapshotted at dispatch time.
+  eligibleContributorIds String[]       @default([]) @map("eligible_contributor_ids")
+  /// What the simulated engine decided up front (delay, outcome, or "never responds").
+  /// Hidden from the operator by default; it is demo/debug information.
+  simulatedFate          Json?          @map("simulated_fate")
+  dispatchedAt           DateTime?      @map("dispatched_at")
+  /// Upper bound of the engine's normal response window.
+  expectedBy             DateTime       @map("expected_by")
+  /// When the engine actually responded, even if the response was ignored.
+  respondedAt            DateTime?      @map("responded_at")
+  response               Json?
+  responseIgnored        Boolean        @default(false) @map("response_ignored")
+  resolvedAt             DateTime?      @map("resolved_at")
+  resolutionReason       String?        @map("resolution_reason")
+  createdAt              DateTime       @default(now()) @map("created_at")
+
+  task           Task         @relation("TaskAttempts", fields: [taskId], references: [id], onDelete: Cascade)
+  currentForTask Task?        @relation("CurrentAttempt")
+  assignments    Assignment[]
+
+  @@index([taskId])
+  @@map("routing_attempts")
+}
+
+model Assignment {
+  id            String           @id @default(uuid()) @db.Uuid
+  taskId        String           @map("task_id") @db.Uuid
+  contributorId String           @map("contributor_id") @db.Uuid
+  attemptId     String?          @map("attempt_id") @db.Uuid
+  source        AssignmentSource
+  status        AssignmentStatus @default(offered)
+  offeredAt     DateTime         @default(now()) @map("offered_at")
+  respondedAt   DateTime?        @map("responded_at")
+  endedReason   String?          @map("ended_reason")
+
+  task        Task            @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  contributor Contributor     @relation(fields: [contributorId], references: [id])
+  attempt     RoutingAttempt? @relation(fields: [attemptId], references: [id])
+
+  @@index([taskId])
+  @@index([contributorId])
+  @@map("assignments")
+}
+
+/// Append-only audit trail. Never updated or deleted by application code.
+model TaskEvent {
+  id           String     @id @default(uuid()) @db.Uuid
+  /// Insertion order; breaks ties between events written in the same millisecond.
+  sequence     Int        @default(autoincrement())
+  taskId       String     @map("task_id") @db.Uuid
+  type         String
+  actor        EventActor
+  message      String
+  attemptId    String?    @map("attempt_id") @db.Uuid
+  assignmentId String?    @map("assignment_id") @db.Uuid
+  payload      Json?
+  createdAt    DateTime   @default(now()) @map("created_at")
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([taskId, sequence])
+  @@map("task_events")
+}

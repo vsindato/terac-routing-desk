@@ -202,11 +202,4 @@ test/                  Vitest tests and helpers
 
 The whole project was built in one AI-agent session (Cursor), and its export is included with the submission. The key points in that session:
 
-- **Planning.** The brief was broken down into requirements, then stack choices: Postgres and pg-boss so the queue lives in the database, with a separate worker process. Next came the core rule (only the current routing attempt can change a task) and a written plan covering data model, task states, worker, UI and tests. Two direction changes happened during planning: Drizzle was swapped for **Prisma**, and the plan was made explicit that there would be **no contributor UI**.
-- **The most important correction.** The first version of the task board flagged requests as "overdue" once they passed the engine's normal 20-second window, with an amber warning saying they "may be slow or may never respond". That quietly contradicted the brief: the operator *cannot* know whether a request is slow or dead. The warning, the progress bar against the window, and the "needs a decision" count for long waits were all removed. Waiting tasks now show elapsed time only.
-- **Smaller fixes found while checking.** History entries written in the same millisecond sometimes showed in the wrong order, so a sequence number was added to the history table. A font setting was overwritten during setup and restored.
-- **Final testing and verification.**
-  - In the browser: the routine flow, rerouting a slow request (with its late answer ignored), and recovering a declined task with the decliner excluded.
-  - A restart test: both processes were killed while an engine answer was outstanding, then restarted, and the task finished.
-  - The Vitest suite (27 tests).
-  - A sanity check of the tests themselves: the "ignore late answers" guard was deliberately broken, the three tests covering it failed, and the guard was restored.
+- **Planning.** The brief was broken down into requirements, core entities, design decisions and assumptions, and the high-level design. Then picked the stack for a simple, locally running setup. I've also shared a pdf export of the planning doc via email.
